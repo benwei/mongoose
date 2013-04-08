@@ -3850,13 +3850,15 @@ static void read_websocket(struct mg_connection *conn) {
   // callback.  This is either mem on the stack, or a dynamically allocated buffer if it is
   // too large.
   char mem[4 * 1024], *data;
-
   // Loop continuously, reading messages from the socket, invoking the callback,
   // and waiting repeatedly until an error occurs.
   assert(conn->content_len == 0);
   for (;;) {
     header_len = 0;
-    if ((body_len = conn->data_len - conn->request_len) >= 2) {
+    
+    // data length should great than request length, otherwise body_len will overflow
+    if ((conn->data_len > conn->request_len) &&
+      (body_len = conn->data_len - conn->request_len) >= 2) {
       len = buf[1] & 127;
       mask_len = buf[1] & 128 ? 4 : 0;
       if (len < 126 && body_len >= mask_len) {
@@ -3872,7 +3874,7 @@ static void read_websocket(struct mg_connection *conn) {
       }
     }
 
-    if (header_len > 0) {
+    if (header_len > 0 && body_len >= header_len) {
       // Allocate space to hold websocket payload
       data = mem;
       if (data_len > sizeof(mem) && (data = malloc(data_len)) == NULL) {
@@ -3886,14 +3888,16 @@ static void read_websocket(struct mg_connection *conn) {
 
       // Read frame payload from the first message in the queue into data and
       // advance the queue by moving the memory in place.
-      assert(body_len >= header_len);
       if (data_len + header_len > body_len) {
         // Overflow case
         len = body_len - header_len;
         memcpy(data, buf + header_len, len);
         // TODO: handle pull error
         pull(NULL, conn, data + len, data_len - len);
-        conn->data_len = 0;
+
+        // Should reserved the request header original websocket upgrade request
+        // is never removed, so the queue begins after it.
+        conn->data_len = conn->request_len;
       } else {
         // Length of the message being read at the front of the queue
         len = data_len + header_len;
