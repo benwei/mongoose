@@ -3829,11 +3829,28 @@ static void send_websocket_handshake(struct mg_connection *conn) {
             "Sec-WebSocket-Accept: ", b64_sha, "\r\n\r\n");
 }
 
+static unsigned char ws_opcode_frame_type(unsigned char code) {
+    if (code == WS_OPCODE_FRAGMENT) {
+        return WS_OPCODE_FRAGMENT;
+    } else if (code == WS_OPCODE_TEXT) {
+        return WS_OPCODE_TEXT;
+    } else if (code == WS_OPCODE_BINARY) {
+        return WS_OPCODE_BINARY;
+    } else if (code == WS_OPCODE_CLOSE) {
+        return WS_OPCODE_CLOSE;
+    } else if (code == WS_OPCODE_PING) {
+        return WS_OPCODE_PING;
+    } else if (code == WS_OPCODE_PONG) {
+        return WS_OPCODE_PONG;
+    }
+    return WS_OPCODE_INVALID;
+}
 
 static void read_websocket(struct mg_connection *conn) {
   // Pointer to the beginning of the portion of the incoming websocket message queue.
   // The original websocket upgrade request is never removed, so the queue begins after it.
   unsigned char *buf = (unsigned char *) conn->buf + conn->request_len;
+  unsigned char opcode;
   int n;
 
   // body_len is the length of the entire queue in bytes
@@ -3850,13 +3867,21 @@ static void read_websocket(struct mg_connection *conn) {
   // callback.  This is either mem on the stack, or a dynamically allocated buffer if it is
   // too large.
   char mem[4 * 1024], *data;
-
   // Loop continuously, reading messages from the socket, invoking the callback,
   // and waiting repeatedly until an error occurs.
   assert(conn->content_len == 0);
   for (;;) {
     header_len = 0;
-    if ((body_len = conn->data_len - conn->request_len) >= 2) {
+    opcode = buf[0];
+    if (ws_opcode_frame_type(opcode & 0x0F) == WS_OPCODE_INVALID){
+        // do something
+        DEBUG_TRACE(("invalid opcode %u", opcode));
+        break;
+    }
+
+    // data length should great than request length, otherwise body_len will overflow
+    if ((conn->data_len > conn->request_len) &&
+      (body_len = conn->data_len - conn->request_len) >= 2) {
       len = buf[1] & 127;
       mask_len = buf[1] & 128 ? 4 : 0;
       if (len < 126 && body_len >= mask_len) {
@@ -3872,7 +3897,7 @@ static void read_websocket(struct mg_connection *conn) {
       }
     }
 
-    if (header_len > 0) {
+    if (header_len > 0 && body_len >= header_len) {
       // Allocate space to hold websocket payload
       data = mem;
       if (data_len > sizeof(mem) && (data = malloc(data_len)) == NULL) {
@@ -3882,18 +3907,36 @@ static void read_websocket(struct mg_connection *conn) {
       }
 
       // Copy the mask before we shift the queue and destroy it
-      *(uint32_t*)mask = *(uint32_t*)(buf + header_len - mask_len);
+      memcpy(mask, buf + header_len - mask_len, mask_len);
 
       // Read frame payload from the first message in the queue into data and
       // advance the queue by moving the memory in place.
-      assert(body_len >= header_len);
       if (data_len + header_len > body_len) {
         // Overflow case
         len = body_len - header_len;
         memcpy(data, buf + header_len, len);
-        // TODO: handle pull error
-        pull(NULL, conn, data + len, data_len - len);
-        conn->data_len = 0;
+
+        // handle pull error to read remain data in receive buffer
+        for (long remain_len = data_len - len; remain_len > 0;) {
+            int nread = pull(NULL, conn, data + len,(int) remain_len);
+            if (nread < 0) {
+                if (errno == EAGAIN || errno == EINTR) {
+                    continue;
+                }
+                DEBUG_TRACE(("last packet got failure 0x%02x pull r:%ld n:%d", opcode, remain_len, nread));
+            } else if (nread == 0) { // request connection timed out
+                DEBUG_TRACE(("last packet got timeout 0x%02x pull r:%ld", opcode, remain_len));
+                data_len -= remain_len;
+                break;
+            }
+
+            //DEBUG_TRACE(("last packet continue 0x%02x pull r:%ld n:%d", opcode, remain_len, nread));
+            len += nread;
+            remain_len -= nread;
+        }
+        // Should reserved the request header original websocket upgrade request
+        // is never removed, so the queue begins after it.
+        conn->data_len = conn->request_len;
       } else {
         // Length of the message being read at the front of the queue
         len = data_len + header_len;
@@ -3918,8 +3961,8 @@ static void read_websocket(struct mg_connection *conn) {
       // Exit the loop if callback signalled to exit,
       // or "connection close" opcode received.
       if ((conn->ctx->callbacks.websocket_data != NULL &&
-          !conn->ctx->callbacks.websocket_data(conn, buf[0], data, data_len)) ||
-          (buf[0] & 0xf) == 8) {  // Opcode == 8, connection close
+          !conn->ctx->callbacks.websocket_data(conn, opcode, data, data_len)) ||
+          (opcode & 0xf) == WS_OPCODE_CLOSE) {
         break;
       }
 

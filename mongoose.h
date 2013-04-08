@@ -231,6 +231,15 @@ int mg_write(struct mg_connection *, const void *buf, size_t len);
 //  0x9   ping
 //  0xA   pong
 //  0xB-F reserved
+#define WS_OPCODE_INVALID  0xFF
+// default for hybi draft 10
+#define WS_OPCODE_FRAGMENT 0x00
+#define WS_OPCODE_TEXT     0x01
+#define WS_OPCODE_BINARY   0x02
+#define WS_OPCODE_CLOSE    0x08
+#define WS_OPCODE_PING     0x09
+#define WS_OPCODE_PONG     0x0A
+    
 int mg_websocket_write(struct mg_connection* conn, int opcode, const char* data, size_t dataLen);
 
 
