@@ -3884,7 +3884,7 @@ static void read_websocket(struct mg_connection *conn) {
       }
 
       // Copy the mask before we shift the queue and destroy it
-      *(uint32_t*)mask = *(uint32_t*)(buf + header_len - mask_len);
+      memcpy(mask, buf + header_len - mask_len, mask_len);
 
       // Read frame payload from the first message in the queue into data and
       // advance the queue by moving the memory in place.
