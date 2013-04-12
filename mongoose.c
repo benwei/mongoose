@@ -3924,9 +3924,12 @@ static void read_websocket(struct mg_connection *conn) {
                     continue;
                 }
                 DEBUG_TRACE(("last packet got failure 0x%02x pull r:%ld n:%d", opcode, remain_len, nread));
+                opcode |= WS_OPCODE_CLOSE;
+                break;
             } else if (nread == 0) { // request connection timed out
                 DEBUG_TRACE(("last packet got timeout 0x%02x pull r:%ld", opcode, remain_len));
                 data_len -= remain_len;
+                opcode |= WS_OPCODE_CLOSE;
                 break;
             }
 
@@ -3963,6 +3966,9 @@ static void read_websocket(struct mg_connection *conn) {
       if ((conn->ctx->callbacks.websocket_data != NULL &&
           !conn->ctx->callbacks.websocket_data(conn, opcode, data, data_len)) ||
           (opcode & 0xf) == WS_OPCODE_CLOSE) {
+          if (data != mem) {
+              free(data);
+          }
         break;
       }
 
@@ -3975,11 +3981,13 @@ static void read_websocket(struct mg_connection *conn) {
       if ((n = pull(NULL, conn, conn->buf + conn->data_len,
                     conn->buf_size - conn->data_len)) <= 0) {
         // Error, no bytes read
+          conn->ctx->callbacks.websocket_data(conn, 0x80|WS_OPCODE_CLOSE, NULL, 0);
         break;
       }
       conn->data_len += n;
     }
   }
+  
 }
 
 static void handle_websocket_request(struct mg_connection *conn) {
